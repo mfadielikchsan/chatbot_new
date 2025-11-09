@@ -77,7 +77,7 @@ function getText(out) {
 }
 
 // =====================================================
-// Fungsi tambahan: query optimization & deteksi ambigu
+// Fungsi tambahan: query optimization
 // =====================================================
 async function optimizeQuery(userText) {
   try {
@@ -86,13 +86,14 @@ async function optimizeQuery(userText) {
         role: "system",
         content: `
           Kamu adalah AI asisten Dunlop Indonesia.
-          Periksa pertanyaan user dan lakukan 2 hal:
-          1. Jika pertanyaan ambigu atau kurang jelas → jawab dengan pertanyaan klarifikasi.
-          2. Jika jelas → optimalkan pertanyaannya agar lebih spesifik dan ringkas sebelum dikirim ke AI utama.
+          Tugasmu: periksa apakah pertanyaan user sudah jelas.
+          - Jika pertanyaan **kurang jelas tapi masih relevan dengan Dunlop** → status "klarifikasi" dan berikan pertanyaan klarifikasi.
+          - Jika pertanyaan **sudah jelas** → status "optimized" dan optimalkan pertanyaannya agar lebih spesifik.
+          - Jika **tidak relevan sama sekali dengan Dunlop** → status "unknown".
           Jawab hanya dalam format JSON:
           {
-            "status": "klarifikasi" / "optimized",
-            "text": "pertanyaan yang sudah dioptimalkan atau pertanyaan klarifikasi"
+            "status": "klarifikasi" / "optimized" / "unknown",
+            "text": "isi teks"
           }
         `,
       },
@@ -118,20 +119,37 @@ async function optimizeQuery(userText) {
 async function getBotResponse(userText) {
   try {
     // =====================================================
-    // Cek intent produk dulu lewat AI
+    // 1️⃣ OPTIMIZE QUERY lebih dulu
+    // =====================================================
+    const queryCheck = await optimizeQuery(userText);
+    if (queryCheck.status === "unknown") {
+      // Jika tidak relevan sama sekali dengan Dunlop
+      const unknownIntent = intents.find((i) => i.intent === "Unknown");
+      const reply =
+        unknownIntent?.response ||
+        "Mohon maaf, saat ini Diva tidak memiliki informasi spesifik tentang topik tersebut.";
+      memory[sessionId].push({ role: "assistant", content: reply });
+      return reply;
+    }
+
+    // Simpan versi pertanyaan setelah optimasi
+    const optimizedText = queryCheck.text || userText;
+
+    // =====================================================
+    // 2️⃣ Cek intent produk
     // =====================================================
     const { error: preIntentErr, output: preIntentOut } = await model.run([
       {
         role: "system",
         content: `
-          Kamu adalah AI pendeteksi intent pertanyaan Dunlop Indonesia.
-          Tentukan apakah pertanyaan user **secara spesifik meminta daftar produk, ukuran, katalog, jenis ban Dunlop**.
+          Kamu adalah AI pendeteksi intent pertanyaan Dunlop Indonesia yang bernama Diva.
+          Tentukan apakah pertanyaan user secara spesifik meminta daftar produk, ukuran, katalog, atau jenis ban Dunlop.
           Jika iya → jawab "produk".
           Jika tidak → jawab "lainnya".
           Jawab hanya dengan salah satu kata: "produk" atau "lainnya".
         `,
       },
-      { role: "user", content: userText },
+      { role: "user", content: optimizedText },
     ]);
 
     if (preIntentErr) throw preIntentErr;
@@ -142,22 +160,22 @@ async function getBotResponse(userText) {
     // =====================================================
     if (preIntent === "produk") {
       const reply = "Berikut daftar produk Dunlop beserta semua ukuran:";
-      memory[sessionId].push({ role: "user", content: userText });
+      memory[sessionId].push({ role: "user", content: optimizedText });
       memory[sessionId].push({ role: "assistant", content: reply });
-      return { 
+      return {
         text: reply,
         attachment: {
           url: "Product List All Size.xlsx",
           name: "Product List All Size.xlsx",
-          label: "Download Product List"
-        }
+          label: "Download Product List",
+        },
       };
     }
 
     // =====================================================
-    // Deteksi intent utama (lokasi / lainnya)
+    // 3️⃣ Deteksi intent utama (lokasi / lainnya)
     // =====================================================
-    memory[sessionId].push({ role: "user", content: userText });
+    memory[sessionId].push({ role: "user", content: optimizedText });
     const shortHistory = memory[sessionId].slice(-6);
 
     const { error: intentErr, output: intentOut } = await model.run([
@@ -170,7 +188,7 @@ async function getBotResponse(userText) {
           Selain itu → jawab "lainnya".
         `,
       },
-      { role: "user", content: userText },
+      { role: "user", content: optimizedText },
     ]);
     if (intentErr) throw intentErr;
 
@@ -194,14 +212,14 @@ async function getBotResponse(userText) {
 
             Berikut daftar lokasi Dunlop Shop:
             ${lokasiText}.
-            Ingat jawablah hanya berdasarkan data sumber yg saya berikan diatas. jangan berikan data yang tidak ada.
+            Ingat jawablah hanya berdasarkan data sumber yang saya berikan di atas. Jangan berikan data yang tidak ada.
 
             Format jawaban rapi dan mudah dibaca, misalnya:
             Nama Toko, Alamat, Kota, Kontak.
             Berikan pemisah --- untuk setiap toko.
           `,
         },
-        { role: "user", content: userText },
+        { role: "user", content: optimizedText },
       ]);
       if (lokasiErr) throw lokasiErr;
 
@@ -211,21 +229,7 @@ async function getBotResponse(userText) {
     }
 
     // =====================================================
-    // Intent: LAINNYA → query optimization & ambigu
-    // =====================================================
-    const queryCheck = await optimizeQuery(userText);
-
-    if (queryCheck.status === "klarifikasi") {
-      memory[sessionId].push({ role: "assistant", content: queryCheck.text });
-      return queryCheck.text; 
-    }
-
-    const optimizedText = queryCheck.text;
-    memory[sessionId].push({ role: "user", content: optimizedText });
-    const shortHistoryOptimized = memory[sessionId].slice(-6);
-
-    // =====================================================
-    // Intent: LAINNYA → klasifikasi intent
+    // 4️⃣ Intent: LAINNYA → klasifikasi ke daftar intent
     // =====================================================
     const daftarIntent = intents.map((i) => i.intent).join(", ");
     const { error: matchErr, output: matchOut } = await model.run([
@@ -248,20 +252,40 @@ async function getBotResponse(userText) {
       (i) => i.intent.toLowerCase() === matchedIntent.toLowerCase()
     );
 
+    // =====================================================
+    // 5️⃣ Jika tidak ada match → cek apakah perlu klarifikasi
+    // =====================================================
+    if (!matched) {
+      if (queryCheck.status === "klarifikasi") {
+        // Masih relevan dengan Dunlop tapi ambigu
+        memory[sessionId].push({ role: "assistant", content: queryCheck.text });
+        return queryCheck.text;
+      }
+
+      // Tidak relevan sama sekali (fallback ke Unknown)
+      const unknownIntent = intents.find((i) => i.intent === "Unknown");
+      const reply =
+        unknownIntent?.response ||
+        "Mohon maaf, saat ini Diva tidak memiliki informasi spesifik tentang topik tersebut.";
+      memory[sessionId].push({ role: "assistant", content: reply });
+      return reply;
+    }
+
+    // =====================================================
+    // 6️⃣ Jika ada match → kirim respons
+    // =====================================================
     const reply =
-      matched?.response ||
+      matched.response ||
       intents.find((i) => i.intent === "Unknown")?.response ||
       "Maaf, saya tidak menemukan jawaban untuk pertanyaan tersebut.";
 
     memory[sessionId].push({ role: "assistant", content: reply });
     return reply;
-
   } catch (error) {
     console.error("Error:", error);
     return "Terjadi kesalahan koneksi ke server. Silahkan coba beberapa saat lagi";
   }
 }
-
 
 // =====================================================
 // Event handler
@@ -276,7 +300,7 @@ chatForm.addEventListener("submit", async (e) => {
 
   const typingDiv = document.createElement("div");
   typingDiv.classList.add("bot-message");
-  typingDiv.innerHTML = `<div class="message"><em>Dunlop AI sedang mengetik...</em></div>`;
+  typingDiv.innerHTML = `<div class="message"><em>Diva sedang mengetik...</em></div>`;
   chatBox.appendChild(typingDiv);
   chatBox.scrollTop = chatBox.scrollHeight;
 
