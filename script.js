@@ -137,8 +137,12 @@ async function getBotResponse(userText) {
     if (preIntentErr) throw preIntentErr;
     const preIntent = getText(preIntentOut).trim().toLowerCase();
 
+    // =====================================================
+    // Intent: PRODUK
+    // =====================================================
     if (preIntent === "produk") {
       const reply = "Berikut daftar produk Dunlop beserta semua ukuran:";
+      memory[sessionId].push({ role: "user", content: userText });
       memory[sessionId].push({ role: "assistant", content: reply });
       return { 
         text: reply,
@@ -151,23 +155,11 @@ async function getBotResponse(userText) {
     }
 
     // =====================================================
-    // Query optimization & deteksi ambigu (non-produk)
-    // =====================================================
-    const queryCheck = await optimizeQuery(userText);
-
-    if (queryCheck.status === "klarifikasi") {
-      memory[sessionId].push({ role: "assistant", content: queryCheck.text });
-      return queryCheck.text; 
-    }
-
-    const optimizedText = queryCheck.text;
-
-    memory[sessionId].push({ role: "user", content: optimizedText });
-    const shortHistory = memory[sessionId].slice(-6);
-
-    // =====================================================
     // Deteksi intent utama (lokasi / lainnya)
     // =====================================================
+    memory[sessionId].push({ role: "user", content: userText });
+    const shortHistory = memory[sessionId].slice(-6);
+
     const { error: intentErr, output: intentOut } = await model.run([
       ...shortHistory,
       {
@@ -178,7 +170,7 @@ async function getBotResponse(userText) {
           Selain itu → jawab "lainnya".
         `,
       },
-      { role: "user", content: optimizedText },
+      { role: "user", content: userText },
     ]);
     if (intentErr) throw intentErr;
 
@@ -197,15 +189,17 @@ async function getBotResponse(userText) {
             Tugasmu: bantu user menemukan toko resmi Dunlop berdasarkan daftar berikut.
             Jika user menyebut kota, kabupaten, provinsi, atau area tertentu, tampilkan toko-toko yang relevan.
             Jika user tidak menyebut lokasi spesifik, minta mereka menyebutkan kota atau daerah.
+            Jika user menanyakan online store → jawab bahwa Dunlop hanya ada toko offline dan beri pesan standar.
 
             Berikut daftar lokasi Dunlop Shop:
-            ${lokasiText}
+            ${lokasiText}.
+            Ingat jawablah hanya berdasarkan data sumber yg saya berikan diatas. jangan berikan data yang tidak ada.
 
             Format jawaban rapi dan mudah dibaca, misalnya:
             Nama Toko, Alamat, Kota, Kontak.
           `,
         },
-        { role: "user", content: optimizedText },
+        { role: "user", content: userText },
       ]);
       if (lokasiErr) throw lokasiErr;
 
@@ -215,46 +209,57 @@ async function getBotResponse(userText) {
     }
 
     // =====================================================
-    // Intent: LAINNYA
+    // Intent: LAINNYA → query optimization & ambigu
     // =====================================================
-    if (intent === "lainnya") {
-      const daftarIntent = intents.map((i) => i.intent).join(", ");
+    const queryCheck = await optimizeQuery(userText);
 
-      const { error: matchErr, output: matchOut } = await model.run([
-        {
-          role: "system",
-          content: `
-            Kamu adalah AI klasifikasi pertanyaan Dunlop Indonesia.
-            Berikut daftar intent yang tersedia:
-            ${daftarIntent}
-            Tentukan intent yang paling sesuai berdasarkan pertanyaan user.
-            Jawab hanya dengan nama intent yang paling relevan.
-          `,
-        },
-        { role: "user", content: optimizedText },
-      ]);
-      if (matchErr) throw matchErr;
-
-      const matchedIntent = getText(matchOut).trim();
-      const matched = intents.find(
-        (i) => i.intent.toLowerCase() === matchedIntent.toLowerCase()
-      );
-
-      const reply =
-        matched?.response ||
-        intents.find((i) => i.intent === "Unknown")?.response ||
-        "Maaf, saya tidak menemukan jawaban untuk pertanyaan tersebut.";
-
-      memory[sessionId].push({ role: "assistant", content: reply });
-      return reply;
+    if (queryCheck.status === "klarifikasi") {
+      memory[sessionId].push({ role: "assistant", content: queryCheck.text });
+      return queryCheck.text; 
     }
 
-    return "Maaf, saya tidak dapat memahami permintaan Anda.";
+    const optimizedText = queryCheck.text;
+    memory[sessionId].push({ role: "user", content: optimizedText });
+    const shortHistoryOptimized = memory[sessionId].slice(-6);
+
+    // =====================================================
+    // Intent: LAINNYA → klasifikasi intent
+    // =====================================================
+    const daftarIntent = intents.map((i) => i.intent).join(", ");
+    const { error: matchErr, output: matchOut } = await model.run([
+      {
+        role: "system",
+        content: `
+          Kamu adalah AI klasifikasi pertanyaan Dunlop Indonesia.
+          Berikut daftar intent yang tersedia:
+          ${daftarIntent}
+          Tentukan intent yang paling sesuai berdasarkan pertanyaan user.
+          Jawab hanya dengan nama intent yang paling relevan.
+        `,
+      },
+      { role: "user", content: optimizedText },
+    ]);
+    if (matchErr) throw matchErr;
+
+    const matchedIntent = getText(matchOut).trim();
+    const matched = intents.find(
+      (i) => i.intent.toLowerCase() === matchedIntent.toLowerCase()
+    );
+
+    const reply =
+      matched?.response ||
+      intents.find((i) => i.intent === "Unknown")?.response ||
+      "Maaf, saya tidak menemukan jawaban untuk pertanyaan tersebut.";
+
+    memory[sessionId].push({ role: "assistant", content: reply });
+    return reply;
+
   } catch (error) {
     console.error("Error:", error);
     return "Terjadi kesalahan koneksi ke server. Silahkan coba beberapa saat lagi";
   }
 }
+
 
 // =====================================================
 // Event handler
