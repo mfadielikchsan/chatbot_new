@@ -190,6 +190,7 @@ async function getBotResponse(userText) {
             Jika user menyebut kota, kabupaten, provinsi, atau area tertentu, tampilkan toko-toko yang relevan.
             Jika user tidak menyebut lokasi spesifik, minta mereka menyebutkan kota atau daerah.
             Jika user menanyakan online store → jawab bahwa Dunlop hanya ada toko offline dan beri pesan standar.
+            Untuk Nama Toko di Bold.
 
             Berikut daftar lokasi Dunlop Shop:
             ${lokasiText}.
@@ -197,6 +198,7 @@ async function getBotResponse(userText) {
 
             Format jawaban rapi dan mudah dibaca, misalnya:
             Nama Toko, Alamat, Kota, Kontak.
+            Berikan pemisah --- untuk setiap toko.
           `,
         },
         { role: "user", content: userText },
