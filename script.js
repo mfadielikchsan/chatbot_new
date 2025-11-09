@@ -27,12 +27,28 @@ if (!memory[sessionId]) memory[sessionId] = [];
 // =====================================================
 // Fungsi utilitas
 // =====================================================
-function addMessage(sender, text) {
+function addMessage(sender, text, attachment = null) {
   const div = document.createElement("div");
   div.classList.add(sender === "user" ? "user-message" : "bot-message");
+
   const msg = document.createElement("div");
   msg.classList.add("message");
-  msg.innerHTML = sender === "bot" ? markdownToHTML(text) : text;
+
+  if (sender === "bot") {
+    let html = markdownToHTML(text);
+
+    if (attachment) {
+      html += `<br><a href="${attachment.url}" download="${attachment.name}" 
+                 style="color:#ffcc00;text-decoration:underline;" target="_blank">
+                 ${attachment.label || attachment.name}
+               </a>`;
+    }
+
+    msg.innerHTML = html;
+  } else {
+    msg.innerHTML = text;
+  }
+
   div.appendChild(msg);
   chatBox.appendChild(div);
   chatBox.scrollTop = chatBox.scrollHeight;
@@ -61,14 +77,91 @@ function getText(out) {
 }
 
 // =====================================================
+// Fungsi tambahan: query optimization & deteksi ambigu
+// =====================================================
+async function optimizeQuery(userText) {
+  try {
+    const { error: optErr, output: optOut } = await model.run([
+      {
+        role: "system",
+        content: `
+          Kamu adalah AI asisten Dunlop Indonesia.
+          Periksa pertanyaan user dan lakukan 2 hal:
+          1. Jika pertanyaan ambigu atau kurang jelas → jawab dengan pertanyaan klarifikasi.
+          2. Jika jelas → optimalkan pertanyaannya agar lebih spesifik dan ringkas sebelum dikirim ke AI utama.
+          Jawab hanya dalam format JSON:
+          {
+            "status": "klarifikasi" / "optimized",
+            "text": "pertanyaan yang sudah dioptimalkan atau pertanyaan klarifikasi"
+          }
+        `,
+      },
+      { role: "user", content: userText },
+    ]);
+    if (optErr) throw optErr;
+
+    const resultText = getText(optOut).trim();
+    try {
+      return JSON.parse(resultText);
+    } catch {
+      return { status: "optimized", text: userText };
+    }
+  } catch (error) {
+    console.error("OptimizeQuery Error:", error);
+    return { status: "optimized", text: userText };
+  }
+}
+
+// =====================================================
 // Logika utama chatbot
 // =====================================================
 async function getBotResponse(userText) {
   try {
-    memory[sessionId].push({ role: "user", content: userText });
+    // =====================================================
+    // Cek intent produk dulu lewat AI
+    // =====================================================
+    const { error: preIntentErr, output: preIntentOut } = await model.run([
+      {
+        role: "system",
+        content: `
+          Kamu adalah AI pendeteksi intent pertanyaan Dunlop Indonesia.
+          Tentukan apakah pertanyaan user **secara spesifik meminta daftar produk, ukuran, katalog, jenis ban Dunlop**.
+          Jika iya → jawab "produk".
+          Jika tidak → jawab "lainnya".
+          Jawab hanya dengan salah satu kata: "produk" atau "lainnya".
+        `,
+      },
+      { role: "user", content: userText },
+    ]);
+
+    if (preIntentErr) throw preIntentErr;
+    const preIntent = getText(preIntentOut).trim().toLowerCase();
+
+    if (preIntent === "produk") {
+      const reply = "Berikut daftar produk Dunlop beserta semua ukuran:";
+      memory[sessionId].push({ role: "assistant", content: reply });
+      return { 
+        text: reply,
+        attachment: {
+          url: "Product List All Size.xlsx",
+          name: "Product List All Size.xlsx",
+          label: "Download Product List"
+        }
+      };
+    }
+
+    // =====================================================
+    // Query optimization & deteksi ambigu (non-produk)
+    // =====================================================
+    const queryCheck = await optimizeQuery(userText);
+    const optimizedText = queryCheck.text;
+
+    memory[sessionId].push({ role: "user", content: optimizedText });
     const shortHistory = memory[sessionId].slice(-6);
 
-    // 1️⃣ Deteksi intent
+    // =====================================================
+    // Deteksi intent utama (lokasi / lainnya)
+    // =====================================================
     const { error: intentErr, output: intentOut } = await model.run([
       ...shortHistory,
       {
@@ -79,14 +172,14 @@ async function getBotResponse(userText) {
           Selain itu → jawab "lainnya".
         `,
       },
-      { role: "user", content: userText },
+      { role: "user", content: optimizedText },
     ]);
     if (intentErr) throw intentErr;
 
     const intent = getText(intentOut).trim().toLowerCase();
 
     // =====================================================
-    // Intent: LOKASI (gunakan AI untuk pencarian langsung)
+    // Intent: LOKASI
     // =====================================================
     if (intent === "lokasi") {
       const { error: lokasiErr, output: lokasiOut } = await model.run([
@@ -106,7 +199,7 @@ async function getBotResponse(userText) {
             Nama Toko, Alamat, Kota, Kontak.
           `,
         },
-        { role: "user", content: userText },
+        { role: "user", content: optimizedText },
       ]);
       if (lokasiErr) throw lokasiErr;
 
@@ -132,7 +225,7 @@ async function getBotResponse(userText) {
             Jawab hanya dengan nama intent yang paling relevan.
           `,
         },
-        { role: "user", content: userText },
+        { role: "user", content: optimizedText },
       ]);
       if (matchErr) throw matchErr;
 
@@ -177,5 +270,10 @@ chatForm.addEventListener("submit", async (e) => {
   const botReply = await getBotResponse(userText);
 
   chatBox.removeChild(typingDiv);
-  addMessage("bot", botReply);
+
+  if (typeof botReply === "object" && botReply.attachment) {
+    addMessage("bot", botReply.text, botReply.attachment);
+  } else {
+    addMessage("bot", botReply);
+  }
 });
