@@ -154,6 +154,12 @@ async function getBotResponse(userText) {
     // Query optimization & deteksi ambigu (non-produk)
     // =====================================================
     const queryCheck = await optimizeQuery(userText);
+
+    if (queryCheck.status === "klarifikasi") {
+      memory[sessionId].push({ role: "assistant", content: queryCheck.text });
+      return queryCheck.text; 
+    }
+
     const optimizedText = queryCheck.text;
 
     memory[sessionId].push({ role: "user", content: optimizedText });
@@ -246,7 +252,7 @@ async function getBotResponse(userText) {
     return "Maaf, saya tidak dapat memahami permintaan Anda.";
   } catch (error) {
     console.error("Error:", error);
-    return "Terjadi kesalahan koneksi ke server AI.";
+    return "Terjadi kesalahan koneksi ke server. Silahkan coba beberapa saat lagi";
   }
 }
 
