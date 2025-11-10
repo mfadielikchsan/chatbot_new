@@ -62,6 +62,25 @@ https://www.dunlop.co.id/id/emagazine`
 https://www.dunlop.co.id/id/`
   },
   {
+    intent: "Pembelian online",
+    patterns: [
+      "beli online",
+      "bisa beli di tokopedia",
+      "bisa beli di shopee",
+      "ada di marketplace",
+      "jual di tokopedia",
+      "jual di shopee",
+      "bisa pesan online",
+      "beli lewat internet",
+      "ada di online store",
+      "ada di e-commerce",
+      "pembelian online",
+      "toko online"
+    ],
+    response: `Mohon maaf, saat ini kami hanya melayani pembelian melalui toko offline resmi. 
+  Silakan kunjungi toko resmi Dunlop/Falken terdekat untuk pembelian produk.`
+  },
+  {
     intent: "Official social media",
     patterns: ["instagram", "facebook", "tiktok", "youtube", "akun resmi", "sosial media"],
     response: `Berikut akun sosial media resmi Dunlop dan Falken:
