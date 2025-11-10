@@ -22,7 +22,14 @@ const userInput = document.getElementById("user-input");
 const sessionId = localStorage.getItem("sessionId") || crypto.randomUUID();
 localStorage.setItem("sessionId", sessionId);
 const memory = {};
-if (!memory[sessionId]) memory[sessionId] = [];
+if (!memory[sessionId]) {
+  memory[sessionId] = [
+    {
+      role: "system",
+      content: "Kamu adalah Diva, asisten resmi Dunlop Indonesia. Jawablah sopan dan informatif berdasarkan data Dunlop yang diberikan."
+    }
+  ];
+}
 
 // =====================================================
 // Fungsi utilitas
@@ -87,9 +94,9 @@ async function optimizeQuery(userText) {
         content: `
           Kamu adalah AI asisten Dunlop Indonesia.
           Tugasmu: periksa apakah pertanyaan user sudah jelas.
-          - Jika pertanyaan **kurang jelas tapi masih relevan dengan Dunlop** → status "klarifikasi" dan berikan pertanyaan klarifikasi.
-          - Jika pertanyaan **sudah jelas** → status "optimized" dan optimalkan pertanyaannya agar lebih spesifik.
-          - Jika **tidak relevan sama sekali dengan Dunlop** → status "unknown".
+          - Jika pertanyaan kurang jelas tapi masih relevan dengan Dunlop → status "klarifikasi" dan berikan pertanyaan klarifikasi.
+          - Jika pertanyaan sudah jelas → status "optimized" dan optimalkan pertanyaannya agar lebih spesifik.
+          - Jika tidak relevan sama sekali dengan Dunlop → status "unknown".
           Jawab hanya dalam format JSON:
           {
             "status": "klarifikasi" / "optimized" / "unknown",
@@ -118,12 +125,11 @@ async function optimizeQuery(userText) {
 // =====================================================
 async function getBotResponse(userText) {
   try {
-    // =====================================================
-    // 1️⃣ OPTIMIZE QUERY lebih dulu
-    // =====================================================
+    memory[sessionId].push({ role: "user", content: userText });
+    const context = memory[sessionId].slice(-12);
+
     const queryCheck = await optimizeQuery(userText);
     if (queryCheck.status === "unknown") {
-      // Jika tidak relevan sama sekali dengan Dunlop
       const unknownIntent = intents.find((i) => i.intent === "Unknown");
       const reply =
         unknownIntent?.response ||
@@ -132,13 +138,10 @@ async function getBotResponse(userText) {
       return reply;
     }
 
-    // Simpan versi pertanyaan setelah optimasi
     const optimizedText = queryCheck.text || userText;
 
-    // =====================================================
-    // 2️⃣ Cek intent produk
-    // =====================================================
     const { error: preIntentErr, output: preIntentOut } = await model.run([
+      ...context,
       {
         role: "system",
         content: `
@@ -155,12 +158,8 @@ async function getBotResponse(userText) {
     if (preIntentErr) throw preIntentErr;
     const preIntent = getText(preIntentOut).trim().toLowerCase();
 
-    // =====================================================
-    // Intent: PRODUK
-    // =====================================================
     if (preIntent === "produk") {
       const reply = "Berikut daftar produk Dunlop beserta semua ukuran:";
-      memory[sessionId].push({ role: "user", content: optimizedText });
       memory[sessionId].push({ role: "assistant", content: reply });
       return {
         text: reply,
@@ -172,14 +171,8 @@ async function getBotResponse(userText) {
       };
     }
 
-    // =====================================================
-    // 3️⃣ Deteksi intent utama (lokasi / lainnya)
-    // =====================================================
-    memory[sessionId].push({ role: "user", content: optimizedText });
-    const shortHistory = memory[sessionId].slice(-6);
-
     const { error: intentErr, output: intentOut } = await model.run([
-      ...shortHistory,
+      ...context,
       {
         role: "system",
         content: `
@@ -194,12 +187,9 @@ async function getBotResponse(userText) {
 
     const intent = getText(intentOut).trim().toLowerCase();
 
-    // =====================================================
-    // Intent: LOKASI
-    // =====================================================
     if (intent === "lokasi") {
       const { error: lokasiErr, output: lokasiOut } = await model.run([
-        ...shortHistory,
+        ...context,
         {
           role: "system",
           content: `
@@ -228,11 +218,9 @@ async function getBotResponse(userText) {
       return hasil;
     }
 
-    // =====================================================
-    // 4️⃣ Intent: LAINNYA → klasifikasi ke daftar intent
-    // =====================================================
     const daftarIntent = intents.map((i) => i.intent).join(", ");
     const { error: matchErr, output: matchOut } = await model.run([
+      ...context,
       {
         role: "system",
         content: `
@@ -252,17 +240,12 @@ async function getBotResponse(userText) {
       (i) => i.intent.toLowerCase() === matchedIntent.toLowerCase()
     );
 
-    // =====================================================
-    // 5️⃣ Jika tidak ada match → cek apakah perlu klarifikasi
-    // =====================================================
     if (!matched) {
       if (queryCheck.status === "klarifikasi") {
-        // Masih relevan dengan Dunlop tapi ambigu
         memory[sessionId].push({ role: "assistant", content: queryCheck.text });
         return queryCheck.text;
       }
 
-      // Tidak relevan sama sekali (fallback ke Unknown)
       const unknownIntent = intents.find((i) => i.intent === "Unknown");
       const reply =
         unknownIntent?.response ||
@@ -271,9 +254,6 @@ async function getBotResponse(userText) {
       return reply;
     }
 
-    // =====================================================
-    // 6️⃣ Jika ada match → kirim respons
-    // =====================================================
     const reply =
       matched.response ||
       intents.find((i) => i.intent === "Unknown")?.response ||
